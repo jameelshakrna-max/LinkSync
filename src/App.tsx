@@ -151,6 +151,9 @@ function LinkSyncApp() {
   const [hostUrl, setHostUrl] = useState('');
   const [explicitProjectId, setExplicitProjectId] = useState('');
   const [dbUrl, setDbUrl] = useState('');
+  const [explicitDbId, setExplicitDbId] = useState('');
+  const [hostPlatformOverride, setHostPlatformOverride] = useState<ProjectMeta['platform'] | null>(null);
+  const [dbPlatformOverride, setDbPlatformOverride] = useState<DatabaseMeta['platform'] | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('idle');
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [token, setToken] = useState('');
@@ -276,6 +279,7 @@ function LinkSyncApp() {
 
   // Parsing logics
   const hostMeta = useMemo((): ProjectMeta => {
+    if (hostPlatformOverride) return { platform: hostPlatformOverride, url: hostUrl, name: hostUrl || 'Manual Project' };
     if (!isValidUrl(hostUrl)) return { platform: 'Unknown', url: hostUrl };
     if (hostUrl.includes('vercel.com') || hostUrl.includes('vercel.app')) {
       const parts = hostUrl.replace(/\/$/, '').split('/');
@@ -289,9 +293,10 @@ function LinkSyncApp() {
       return { platform: 'Netlify', name, url: hostUrl };
     }
     return { platform: 'Unknown', url: hostUrl };
-  }, [hostUrl]);
+  }, [hostUrl, hostPlatformOverride]);
 
   const dbMeta = useMemo((): DatabaseMeta => {
+    if (dbPlatformOverride) return { platform: dbPlatformOverride, url: dbUrl, projectRef: explicitDbId };
     if (!isValidUrl(dbUrl)) return { platform: 'Unknown', url: dbUrl };
     if (dbUrl.includes('supabase.com') || dbUrl.includes('supabase.co')) {
       const match = dbUrl.match(/project\/([a-z0-9]+)/) || dbUrl.match(/([a-z0-9]+)\.supabase\./);
@@ -303,7 +308,7 @@ function LinkSyncApp() {
     if (dbUrl.includes('upstash.com')) return { platform: 'Upstash' as any, url: dbUrl };
     if (dbUrl.includes('mongodb.com')) return { platform: 'MongoDB Atlas' as any, url: dbUrl };
     return { platform: 'Unknown', url: dbUrl };
-  }, [dbUrl]);
+  }, [dbUrl, dbPlatformOverride, explicitDbId]);
 
   const isReadyToAnalyze = hostMeta.platform !== 'Unknown' && dbMeta.platform !== 'Unknown';
 
@@ -388,7 +393,7 @@ function LinkSyncApp() {
       const newConnectionData = {
         name: hostMeta.name || 'New Stack',
         host: { ...hostMeta, projectId: explicitProjectId },
-        database: dbMeta,
+        database: { ...dbMeta, projectRef: explicitDbId || dbMeta.projectRef },
         status: data.results.some((r: any) => r.status === 'failed') ? 'error' : 'active',
         lastSynced: new Date().toISOString()
       };
@@ -437,6 +442,9 @@ function LinkSyncApp() {
   const resetConnector = () => {
     setHostUrl('');
     setExplicitProjectId('');
+    setExplicitDbId('');
+    setHostPlatformOverride(null);
+    setDbPlatformOverride(null);
     setDbUrl('');
     setStatus('idle');
     setAnalysis(null);
@@ -465,6 +473,9 @@ function LinkSyncApp() {
     setHostUrl(c.host.url);
     setExplicitProjectId(c.host.projectId || '');
     setDbUrl(c.database.url);
+    setExplicitDbId(c.database.projectRef || '');
+    setHostPlatformOverride(c.host.platform);
+    setDbPlatformOverride(c.database.platform);
     setView('connect');
   };
 
@@ -514,12 +525,15 @@ function LinkSyncApp() {
                   <img src={currentUser.photoURL || ''} alt="User" className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
                 </div>
               ) : (
-                <button 
-                  onClick={handleLogin}
-                  className="px-4 py-2 bg-white/5 border border-white/10 rounded-full text-[10px] font-bold text-white uppercase tracking-widest hover:bg-white hover:text-black transition-all"
-                >
-                  Login
-                </button>
+                <div className="flex flex-col items-end gap-1">
+                  <button 
+                    onClick={handleLogin}
+                    className="px-4 py-2 bg-white/5 border border-white/10 rounded-full text-[10px] font-bold text-white uppercase tracking-widest hover:bg-white hover:text-black transition-all"
+                  >
+                    Login
+                  </button>
+                  <span className="text-[8px] text-[#64748B] uppercase tracking-tighter italic">If fails: open in new tab</span>
+                </div>
               )}
             </div>
           )}
@@ -643,20 +657,31 @@ function LinkSyncApp() {
                   <motion.div className="p-6 md:p-10 rounded-[24px] border border-[#27272A] bg-[#111113] shadow-2xl relative">
                     <div className="space-y-6">
                       <div className="space-y-3">
-                        <label className="block text-[0.7rem] md:text-[0.75rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Website Host URL</label>
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[0.7rem] md:text-[0.75rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Website Host URL</label>
+                          <select 
+                            className="bg-transparent border-none text-[9px] font-bold text-blue-500 uppercase outline-none"
+                            value={hostPlatformOverride || ''}
+                            onChange={(e) => setHostPlatformOverride(e.target.value as any || null)}
+                          >
+                            <option value="">Auto-Detect</option>
+                            <option value="Vercel">Vercel</option>
+                            <option value="Netlify">Netlify</option>
+                          </select>
+                        </div>
                         <input 
                           type="text" 
                           placeholder="https://vercel.com/..."
                           className={cn(
                             "w-full bg-[#18181B] border rounded-xl px-4 py-4 text-sm focus:outline-none transition-all font-mono text-white",
-                            hostUrl && !isValidUrl(hostUrl) ? "border-red-500/50 focus:border-red-500" : "border-[#27272A] focus:border-blue-500"
+                            hostUrl && !isValidUrl(hostUrl) && !hostPlatformOverride ? "border-red-500/50 focus:border-red-500" : "border-[#27272A] focus:border-blue-500"
                           )}
                           value={hostUrl}
                           onChange={(e) => setHostUrl(e.target.value)}
                         />
 
                         <AnimatePresence>
-                          {hostMeta.platform === 'Vercel' && (
+                          {(hostMeta.platform === 'Vercel' || hostPlatformOverride === 'Vercel') && (
                             <motion.div 
                               initial={{ opacity: 0, height: 0 }}
                               animate={{ opacity: 1, height: 'auto' }}
@@ -676,31 +701,66 @@ function LinkSyncApp() {
                         </AnimatePresence>
                         <div className="flex justify-between items-center">
                           {hostMeta.platform !== 'Unknown' && (
-                            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{hostMeta.platform} detected</span>
+                            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{hostMeta.platform} {hostPlatformOverride ? '(Forced)' : 'detected'}</span>
                           )}
-                          {hostUrl && !isValidUrl(hostUrl) && (
+                          {hostUrl && !isValidUrl(hostUrl) && !hostPlatformOverride && (
                             <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Invalid URL format</span>
                           )}
                         </div>
                       </div>
 
                       <div className="space-y-3">
-                        <label className="block text-[0.7rem] md:text-[0.75rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Database Instance URL</label>
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[0.7rem] md:text-[0.75rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Database Instance URL</label>
+                          <select 
+                            className="bg-transparent border-none text-[9px] font-bold text-blue-500 uppercase outline-none"
+                            value={dbPlatformOverride || ''}
+                            onChange={(e) => setDbPlatformOverride(e.target.value as any || null)}
+                          >
+                            <option value="">Auto-Detect</option>
+                            <option value="Supabase">Supabase</option>
+                            <option value="Neon">Neon</option>
+                            <option value="Railway">Railway</option>
+                            <option value="PlanetScale">PlanetScale</option>
+                            <option value="MongoDB Atlas">MongoDB Atlas</option>
+                          </select>
+                        </div>
                         <input 
                           type="text" 
                           placeholder="https://supabase.com/..."
                           className={cn(
                             "w-full bg-[#18181B] border rounded-xl px-4 py-4 text-sm focus:outline-none transition-all font-mono text-white",
-                            dbUrl && !isValidUrl(dbUrl) ? "border-red-500/50 focus:border-red-500" : "border-[#27272A] focus:border-blue-500"
+                            dbUrl && !isValidUrl(dbUrl) && !dbPlatformOverride ? "border-red-500/50 focus:border-red-500" : "border-[#27272A] focus:border-blue-500"
                           )}
                           value={dbUrl}
                           onChange={(e) => setDbUrl(e.target.value)}
                         />
+
+                        <AnimatePresence>
+                          {(dbMeta.platform !== 'Unknown' || dbPlatformOverride) && (
+                            <motion.div 
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="overflow-hidden space-y-2 mt-2"
+                            >
+                              <label className="block text-[0.6rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Explicit Database ID / Project Ref</label>
+                              <input 
+                                type="text" 
+                                placeholder="ref_xyz123..."
+                                className="w-full bg-black/40 border border-[#27272A] rounded-xl px-4 py-3 text-xs focus:outline-none focus:border-blue-500 transition-all font-mono text-white"
+                                value={explicitDbId}
+                                onChange={(e) => setExplicitDbId(e.target.value)}
+                              />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
                         <div className="flex justify-between items-center">
                           {dbMeta.platform !== 'Unknown' && (
-                            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{dbMeta.platform} detected</span>
+                            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{dbMeta.platform} {dbPlatformOverride ? '(Forced)' : 'detected'}</span>
                           )}
-                          {dbUrl && !isValidUrl(dbUrl) && (
+                          {dbUrl && !isValidUrl(dbUrl) && !dbPlatformOverride && (
                             <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Invalid URL format</span>
                           )}
                         </div>
