@@ -1,0 +1,6 @@
+{
+  "name": "LinkSync",
+  "description": "Automatically connect your web host and database by syncing environment variables via project links.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
