@@ -149,6 +149,7 @@ function LinkSyncApp() {
 
   // Connector State
   const [hostUrl, setHostUrl] = useState('');
+  const [explicitProjectId, setExplicitProjectId] = useState('');
   const [dbUrl, setDbUrl] = useState('');
   const [status, setStatus] = useState<ConnectionStatus>('idle');
   const [analysis, setAnalysis] = useState<string | null>(null);
@@ -366,7 +367,7 @@ function LinkSyncApp() {
       // Encrypt sensitive payload before transit
       const encrypted = encrypt(JSON.stringify({
         token,
-        projectName: hostMeta.name,
+        projectName: explicitProjectId || hostMeta.name,
         envVars: envVarsMap
       }));
 
@@ -386,7 +387,7 @@ function LinkSyncApp() {
       
       const newConnectionData = {
         name: hostMeta.name || 'New Stack',
-        host: hostMeta,
+        host: { ...hostMeta, projectId: explicitProjectId },
         database: dbMeta,
         status: data.results.some((r: any) => r.status === 'failed') ? 'error' : 'active',
         lastSynced: new Date().toISOString()
@@ -435,6 +436,7 @@ function LinkSyncApp() {
 
   const resetConnector = () => {
     setHostUrl('');
+    setExplicitProjectId('');
     setDbUrl('');
     setStatus('idle');
     setAnalysis(null);
@@ -461,6 +463,7 @@ function LinkSyncApp() {
   const editConnection = (c: ConnectionRecord) => {
     setEditingId(c.id);
     setHostUrl(c.host.url);
+    setExplicitProjectId(c.host.projectId || '');
     setDbUrl(c.database.url);
     setView('connect');
   };
@@ -651,6 +654,26 @@ function LinkSyncApp() {
                           value={hostUrl}
                           onChange={(e) => setHostUrl(e.target.value)}
                         />
+
+                        <AnimatePresence>
+                          {hostMeta.platform === 'Vercel' && (
+                            <motion.div 
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="overflow-hidden space-y-2 mt-2"
+                            >
+                              <label className="block text-[0.6rem] font-bold text-[#64748B] uppercase tracking-[0.1em]">Explicit Project ID / Slug (Optional)</label>
+                              <input 
+                                type="text" 
+                                placeholder="prj_sdbf..."
+                                className="w-full bg-black/40 border border-[#27272A] rounded-xl px-4 py-3 text-xs focus:outline-none focus:border-blue-500 transition-all font-mono text-white"
+                                value={explicitProjectId}
+                                onChange={(e) => setExplicitProjectId(e.target.value)}
+                              />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                         <div className="flex justify-between items-center">
                           {hostMeta.platform !== 'Unknown' && (
                             <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{hostMeta.platform} detected</span>
