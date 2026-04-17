@@ -4,12 +4,15 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import CryptoJS from 'crypto-js';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DEFAULT_KEY = 'bridgesync-local-dev-key-7722';
 const SECRET_KEY = process.env.VITE_BRIDGE_ENCRYPTION_KEY || DEFAULT_KEY;
+
+const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 function decrypt(cipherText: string) {
   try {
@@ -28,6 +31,45 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // API Route: Infrastructure Analysis
+  app.post('/api/analyze', async (req, res) => {
+    const { hostMeta, dbMeta } = req.body;
+    
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ 
+        error: 'The AI Audit Engine is currently offline (Missing GEMINI_API_KEY). Please add it to your Vercel Project Settings.' 
+      });
+    }
+
+    if (!hostMeta || !dbMeta) {
+      return res.status(400).json({ error: 'Missing metadata for analysis' });
+    }
+
+    try {
+      const prompt = `
+        Analyze this connection request for LinkSync.
+        Host Platform: ${hostMeta.platform} (${hostMeta.url})
+        Database Platform: ${dbMeta.platform} (${dbMeta.url})
+        
+        Explain:
+        1. Common env vars needed.
+        2. Connection walkthrough.
+        3. Security note.
+        
+        Keep it concise, technical, markdown list.
+      `;
+
+      const model = ai.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      
+      res.json({ text });
+    } catch (error: any) {
+      console.error('AI Analysis Error:', error);
+      res.status(500).json({ error: 'Failed to generate infrastructure audit.' });
+    }
+  });
 
   // API Route: Sync to Vercel
   app.post('/api/vercel/sync', async (req, res) => {
@@ -68,7 +110,7 @@ async function startServer() {
         headers: { Authorization: `Bearer ${token}` }
       });
       const existingData = await existingRes.json();
-      const existingKeys = new Set(existingData.envs.map((e: any) => e.key));
+      const existingKeys = new Set(existingData.envs?.map((e: any) => e.key) || []);
 
       const results = [];
       
@@ -76,8 +118,6 @@ async function startServer() {
       for (const [key, value] of Object.entries(envVars)) {
         const isConflict = existingKeys.has(key);
         
-        // In real Vercel API, you'd handle overwrite or skipping
-        // Here we attempt to create new one (Vercel API normally requires DELETE/CREATE for update if it exists)
         const syncRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env`, {
           method: 'POST',
           headers: { 

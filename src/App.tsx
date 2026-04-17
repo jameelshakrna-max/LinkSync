@@ -28,11 +28,78 @@ import {
   Layers
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { GoogleGenAI } from "@google/genai";
 import { encrypt, isSensitive } from './lib/crypto';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  query, 
+  where, 
+  onSnapshot,
+  deleteDoc,
+  OperationType, 
+  handleFirestoreError,
+  Timestamp,
+  User 
+} from './firebase';
 
-// Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorInfo: string | null;
+}
+
+// Error Boundary Component
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public props: ErrorBoundaryProps;
+  public state: ErrorBoundaryState;
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.props = props;
+    this.state = {
+      hasError: false,
+      errorInfo: null
+    };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-black flex items-center justify-center p-8 text-center">
+          <div className="max-w-md space-y-6">
+            <AlertCircle size={48} className="text-red-500 mx-auto" />
+            <h1 className="text-2xl font-black text-white uppercase tracking-tighter">System Malfunction</h1>
+            <p className="text-gray-500 text-sm font-mono bg-white/5 p-4 rounded-xl break-words">
+              {this.state.errorInfo}
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-8 py-4 bg-white text-black font-black text-xs uppercase tracking-widest rounded-full"
+            >
+              Reboot Terminal
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type ConnectionStatus = 'idle' | 'parsing' | 'analyzing' | 'ready' | 'syncing' | 'completed' | 'error';
 
@@ -51,7 +118,7 @@ interface ProjectMeta {
 }
 
 interface DatabaseMeta {
-  platform: 'Supabase' | 'Neon' | 'Railway' | 'Unknown';
+  platform: 'Supabase' | 'Neon' | 'Railway' | 'PlanetScale' | 'Upstash' | 'MongoDB Atlas' | 'Unknown';
   projectRef?: string;
   url: string;
 }
@@ -66,8 +133,18 @@ interface ConnectionRecord {
 }
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <LinkSyncApp />
+    </ErrorBoundary>
+  );
+}
+
+function LinkSyncApp() {
   const [view, setView] = useState<'dashboard' | 'connect'>('dashboard');
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Connector State
@@ -103,16 +180,89 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Load from local storage on mount
+  // Auth Listener & User Sync
   useEffect(() => {
-    const saved = localStorage.getItem('linksync_connections');
-    if (saved) setConnections(JSON.parse(saved));
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      setIsAuthReady(true);
+
+      if (user) {
+        // Sync user profile to Firestore
+        const userRef = doc(db, 'users', user.uid);
+        try {
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              uid: user.uid,
+              email: user.email,
+              displayName: user.displayName,
+              photoURL: user.photoURL,
+              createdAt: Timestamp.now(),
+              role: 'user'
+            });
+            
+            // Migrate localStorage connections to Firestore on first login
+            const saved = localStorage.getItem('linksync_connections');
+            if (saved) {
+              const localConnections = JSON.parse(saved) as ConnectionRecord[];
+              for (const conn of localConnections) {
+                const connRef = doc(collection(db, 'users', user.uid, 'connections'));
+                await setDoc(connRef, { ...conn, userId: user.uid, id: connRef.id });
+              }
+              localStorage.removeItem('linksync_connections');
+            }
+          }
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+        }
+      }
+    });
+    return unsub;
   }, []);
 
-  // Save to local storage
+  // Real-time Database Listener
   useEffect(() => {
-    localStorage.setItem('linksync_connections', JSON.stringify(connections));
-  }, [connections]);
+    if (!currentUser) {
+      // Use local storage for guests
+      const saved = localStorage.getItem('linksync_connections');
+      if (saved) setConnections(JSON.parse(saved));
+      return;
+    }
+
+    const q = query(collection(db, 'users', currentUser.uid, 'connections'));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map(doc => ({ ...doc.data() as any, id: doc.id }));
+      setConnections(docs);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${currentUser.uid}/connections`);
+    });
+
+    return unsub;
+  }, [currentUser]);
+
+  // Save to local storage only if guest
+  useEffect(() => {
+    if (!currentUser) {
+      localStorage.setItem('linksync_connections', JSON.stringify(connections));
+    }
+  }, [connections, currentUser]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setConnections([]);
+    } catch (error) {
+      console.error("Logout failed", error);
+    }
+  };
 
   const isValidUrl = (url: string) => {
     try {
@@ -126,25 +276,31 @@ export default function App() {
   // Parsing logics
   const hostMeta = useMemo((): ProjectMeta => {
     if (!isValidUrl(hostUrl)) return { platform: 'Unknown', url: hostUrl };
-    if (hostUrl.includes('vercel.com')) {
-      const parts = hostUrl.split('/');
-      const name = parts[parts.length - 1] || parts[parts.length - 2] || 'Vercel Project';
+    if (hostUrl.includes('vercel.com') || hostUrl.includes('vercel.app')) {
+      const parts = hostUrl.replace(/\/$/, '').split('/');
+      const lastPart = parts[parts.length - 1];
+      const name = lastPart.replace('.vercel.app', '') || 'Vercel Project';
       return { platform: 'Vercel', name, url: hostUrl };
     }
     if (hostUrl.includes('netlify.app') || hostUrl.includes('app.netlify.com')) {
-      return { platform: 'Netlify', url: hostUrl };
+      const parts = hostUrl.replace(/\/$/, '').split('/');
+      const name = parts[parts.length - 1].replace('.netlify.app', '') || 'Netlify Project';
+      return { platform: 'Netlify', name, url: hostUrl };
     }
     return { platform: 'Unknown', url: hostUrl };
   }, [hostUrl]);
 
   const dbMeta = useMemo((): DatabaseMeta => {
     if (!isValidUrl(dbUrl)) return { platform: 'Unknown', url: dbUrl };
-    if (dbUrl.includes('supabase.com')) {
-      const match = dbUrl.match(/project\/([a-z0-9]+)/);
+    if (dbUrl.includes('supabase.com') || dbUrl.includes('supabase.co')) {
+      const match = dbUrl.match(/project\/([a-z0-9]+)/) || dbUrl.match(/([a-z0-9]+)\.supabase\./);
       return { platform: 'Supabase', projectRef: match?.[1], url: dbUrl };
     }
     if (dbUrl.includes('neon.tech')) return { platform: 'Neon', url: dbUrl };
-    if (dbUrl.includes('railway.app')) return { platform: 'Railway', url: dbUrl };
+    if (dbUrl.includes('railway.app') || dbUrl.includes('railway.com')) return { platform: 'Railway', url: dbUrl };
+    if (dbUrl.includes('planetscale.com')) return { platform: 'PlanetScale' as any, url: dbUrl };
+    if (dbUrl.includes('upstash.com')) return { platform: 'Upstash' as any, url: dbUrl };
+    if (dbUrl.includes('mongodb.com')) return { platform: 'MongoDB Atlas' as any, url: dbUrl };
     return { platform: 'Unknown', url: dbUrl };
   }, [dbUrl]);
 
@@ -155,29 +311,21 @@ export default function App() {
     setStatus('analyzing');
     
     try {
-      const prompt = `
-        Analyze this connection request for LinkSync.
-        Host Platform: ${hostMeta.platform} (${hostMeta.url})
-        Database Platform: ${dbMeta.platform} (${dbMeta.url})
-        
-        Explain:
-        1. Common env vars needed.
-        2. Connection walkthrough.
-        3. Security note.
-        
-        Keep it concise, technical, markdown list.
-      `;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-latest",
-        contents: prompt,
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostMeta, dbMeta })
       });
 
-      const text = response.text || '';
+      if (!response.ok) {
+        throw new Error('Infrastructure analysis failed');
+      }
+
+      const { text } = await response.json();
       setAnalysis(text);
       
       // Extract keys from markdown list (e.g. "SUPABASE_URL", "NEXT_PUBLIC_...")
-      const keys = Array.from(text.matchAll(/`([A-Z0-9_]+)`/g)).map(m => m[1]);
+      const keys = Array.from(text.matchAll(/`([A-Z0-9_]+)`/g)).map((m: any) => m[1]);
       const uniqueKeys = Array.from(new Set(keys));
       
       if (uniqueKeys.length > 0) {
@@ -236,8 +384,7 @@ export default function App() {
 
       setSyncResults(data.results);
       
-      const newConnection: ConnectionRecord = {
-        id: editingId || Math.random().toString(36).substr(2, 9),
+      const newConnectionData = {
         name: hostMeta.name || 'New Stack',
         host: hostMeta,
         database: dbMeta,
@@ -245,10 +392,31 @@ export default function App() {
         lastSynced: new Date().toISOString()
       };
 
-      if (editingId) {
-        setConnections(prev => prev.map(c => c.id === editingId ? newConnection : c));
+      if (currentUser) {
+        const connRef = editingId 
+          ? doc(db, 'users', currentUser.uid, 'connections', editingId)
+          : doc(collection(db, 'users', currentUser.uid, 'connections'));
+        
+        try {
+          await setDoc(connRef, {
+            ...newConnectionData,
+            id: connRef.id,
+            userId: currentUser.uid
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}/connections`);
+        }
       } else {
-        setConnections(prev => [newConnection, ...prev]);
+        const newConnection: ConnectionRecord = {
+          ...newConnectionData,
+          id: editingId || Math.random().toString(36).substr(2, 9),
+        } as any;
+
+        if (editingId) {
+          setConnections(prev => prev.map(c => c.id === editingId ? newConnection : c));
+        } else {
+          setConnections(prev => [newConnection, ...prev]);
+        }
       }
 
       setStatus('completed');
@@ -278,8 +446,16 @@ export default function App() {
     setSyncResults([]);
   };
 
-  const deleteConnection = (id: string) => {
-    setConnections(prev => prev.filter(c => c.id !== id));
+  const deleteConnection = async (id: string) => {
+    if (currentUser) {
+      try {
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'connections', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `users/${currentUser.uid}/connections/${id}`);
+      }
+    } else {
+      setConnections(prev => prev.filter(c => c.id !== id));
+    }
   };
 
   const editConnection = (c: ConnectionRecord) => {
@@ -324,11 +500,26 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-4 md:gap-8">
-          <div className="flex items-center gap-3 md:gap-4 text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-[#64748B]">
-            <span className={cn("transition-colors", view === 'dashboard' ? "text-white" : "hover:text-white cursor-pointer")} onClick={() => setView('dashboard')}>Registry</span>
-            <span className="opacity-30">/</span>
-            <span className={cn("transition-colors", view === 'connect' ? "text-white" : "hover:text-white cursor-pointer")} onClick={() => { resetConnector(); setView('connect'); }}>Node_Link</span>
-          </div>
+          {isAuthReady && (
+            <div className="flex items-center gap-4">
+              {currentUser ? (
+                <div className="flex items-center gap-3">
+                  <div className="hidden md:block text-right">
+                    <p className="text-[10px] font-black text-white uppercase tracking-tighter leading-none">{currentUser.displayName}</p>
+                    <button onClick={handleLogout} className="text-[8px] font-bold text-red-500 uppercase tracking-widest hover:underline">Logout</button>
+                  </div>
+                  <img src={currentUser.photoURL || ''} alt="User" className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
+                </div>
+              ) : (
+                <button 
+                  onClick={handleLogin}
+                  className="px-4 py-2 bg-white/5 border border-white/10 rounded-full text-[10px] font-bold text-white uppercase tracking-widest hover:bg-white hover:text-black transition-all"
+                >
+                  Login
+                </button>
+              )}
+            </div>
+          )}
           <div className="hidden md:block h-4 w-[1px] bg-white/10" />
           <Settings2 size={18} className="text-[#64748B] cursor-pointer hover:text-white" />
         </div>
@@ -517,18 +708,18 @@ export default function App() {
 
                       {status === 'ready' && analysis && (
                         <div className="space-y-6">
-                          {dbMeta.platform === 'Supabase' && (
+                          {dbMeta.platform !== 'Unknown' && (
                             <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/10 space-y-3">
                               <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest flex items-center gap-2">
                                   <AlertCircle size={14} />
-                                  Credentials Locator
+                                  {dbMeta.platform} Credentials Locator
                                 </span>
                                 <button 
                                   onClick={() => setShowHelper(!showHelper)}
                                   className="text-[9px] font-bold text-white uppercase hover:underline"
                                 >
-                                  {showHelper ? 'Hide Help' : 'Where is my password?'}
+                                  {showHelper ? 'Hide Help' : `Where is my ${dbMeta.platform} key?`}
                                 </button>
                               </div>
                               
@@ -541,21 +732,66 @@ export default function App() {
                                     className="overflow-hidden space-y-4 pt-2"
                                   >
                                     <div className="space-y-2">
-                                      <p className="text-[11px] text-[#64748B] leading-relaxed">
-                                        <b className="text-white">Database Password:</b> Supabase doesn't store this in plain text. If you forgot it, go to <span className="text-blue-400">Settings &gt; Database &gt; Reset Password</span>.
-                                      </p>
-                                      <p className="text-[11px] text-[#64748B] leading-relaxed">
-                                        <b className="text-white">Anon Key / URL:</b> Find these in <span className="text-blue-400">Settings &gt; API</span>. Look for the "Project API keys" section.
-                                      </p>
+                                      {dbMeta.platform === 'Supabase' && (
+                                        <>
+                                          <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                            <b className="text-white">Database Password:</b> Supabase doesn't store this in plain text. Go to <span className="text-blue-400">Settings &gt; Database &gt; Reset Password</span>.
+                                          </p>
+                                          <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                            <b className="text-white">Anon Key / URL:</b> Find these in <span className="text-blue-400">Settings &gt; API</span>.
+                                          </p>
+                                        </>
+                                      )}
+                                      {dbMeta.platform === 'Neon' && (
+                                        <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                          <b className="text-white">Connection String:</b> Go to your <span className="text-blue-400">Project Dashboard</span>. The connection string is in the "Connection Details" widget. Choose "Pooled connection" for serverless apps.
+                                        </p>
+                                      )}
+                                      {dbMeta.platform === 'Railway' && (
+                                        <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                          <b className="text-white">Vars:</b> Click your <span className="text-blue-400">Database Service</span>, go to the <span className="text-blue-400">Variables</span> tab, and look for `DATABASE_URL`.
+                                        </p>
+                                      )}
+                                      {dbMeta.platform === 'PlanetScale' && (
+                                        <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                          <b className="text-white">Passwords:</b> Go to your <span className="text-blue-400">Branch &gt; Connect</span>. Generate a new password and copy the `DATABASE_URL`.
+                                        </p>
+                                      )}
+                                      {dbMeta.platform === 'MongoDB Atlas' && (
+                                        <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                          <b className="text-white">SRV String:</b> Click <span className="text-blue-400">Connect</span> on your Cluster, select "Drivers", and copy the connection string.
+                                        </p>
+                                      )}
+                                      {dbMeta.platform === 'Upstash' && (
+                                        <p className="text-[11px] text-[#64748B] leading-relaxed">
+                                          <b className="text-white">Token/URL:</b> Select your Redis/Kafka instance. The URL and Token are in the <span className="text-blue-400">REST API</span> section.
+                                        </p>
+                                      )}
                                     </div>
                                     <div className="h-[1px] bg-white/5" />
                                     <div className="flex items-center gap-2 text-[9px] font-mono text-blue-500/60">
                                       <ShieldCheck size={10} />
-                                      Values are used for one-time sync session
+                                      Values are encrypted for one-time sync session
                                     </div>
                                   </motion.div>
                                 )}
                               </AnimatePresence>
+                            </div>
+                          )}
+
+                          {analysis && (
+                            <div className="p-6 rounded-2xl bg-blue-500/[0.03] border border-blue-500/10 space-y-4">
+                              <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <Cpu size={14} />
+                                AI Infrastructure Audit
+                              </h3>
+                              <div className="text-[11px] text-gray-400 font-mono leading-relaxed overflow-y-auto max-h-[250px] pr-2 custom-scrollbar">
+                                {analysis.split('\n').map((line, i) => (
+                                  <p key={i} className="mb-2 last:mb-0">
+                                    {line}
+                                  </p>
+                                ))}
+                              </div>
                             </div>
                           )}
 

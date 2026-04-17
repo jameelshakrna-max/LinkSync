@@ -2,7 +2,16 @@ import CryptoJS from 'crypto-js';
 
 // Fallback key for demo purposes if env var is not set
 const DEFAULT_KEY = 'bridgesync-local-dev-key-7722';
-const SECRET_KEY = (import.meta as any).env.VITE_BRIDGE_ENCRYPTION_KEY || DEFAULT_KEY;
+// Safer access to environment variables to prevent crashes if import.meta.env is undefined
+const getEnv = (name: string): string | undefined => {
+  try {
+    return (import.meta as any).env[name];
+  } catch {
+    return undefined;
+  }
+};
+
+const SECRET_KEY = getEnv('VITE_BRIDGE_ENCRYPTION_KEY') || DEFAULT_KEY;
 
 /**
  * Encrypts a plain text string using AES.
