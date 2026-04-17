@@ -315,6 +315,8 @@ function LinkSyncApp() {
   const handleAnalyze = async () => {
     if (!isReadyToAnalyze) return;
     setStatus('analyzing');
+    setErrorMessage(null);
+    setAnalysis(null);
     
     try {
       const response = await fetch('/api/analyze', {
@@ -323,15 +325,16 @@ function LinkSyncApp() {
         body: JSON.stringify({ hostMeta, dbMeta })
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        throw new Error('Infrastructure analysis failed');
+        throw new Error(data.error || 'Infrastructure analysis failed');
       }
 
-      const { text } = await response.json();
-      setAnalysis(text);
+      setAnalysis(data.text);
       
       // Extract keys from markdown list (e.g. "SUPABASE_URL", "NEXT_PUBLIC_...")
-      const keys = Array.from(text.matchAll(/`([A-Z0-9_]+)`/g)).map((m: any) => m[1]);
+      const keys = Array.from(data.text.matchAll(/`([A-Z0-9_]+)`/g)).map((m: any) => m[1]);
       const uniqueKeys = Array.from(new Set(keys));
       
       if (uniqueKeys.length > 0) {
@@ -342,9 +345,9 @@ function LinkSyncApp() {
       }
 
       setStatus('ready');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setAnalysis('Failed to connect to AI.');
+      setErrorMessage(error.message || 'Failed to connect to Bridge AI engine.');
       setStatus('idle');
     }
   };
@@ -767,19 +770,27 @@ function LinkSyncApp() {
                       </div>
 
                       {status === 'idle' && (
-                        <button 
-                          onClick={handleAnalyze}
-                          disabled={!isReadyToAnalyze}
-                          className={cn(
-                            "w-full py-5 rounded-xl font-bold transition-all mt-4 flex items-center justify-center gap-3",
-                            isReadyToAnalyze 
-                              ? "bg-blue-500 text-white hover:bg-blue-600 shadow-lg shadow-blue-500/20 active:scale-95" 
-                              : "bg-white/5 text-white/20 cursor-not-allowed border border-white/5"
+                        <div className="space-y-4">
+                          {errorMessage && (
+                            <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 font-mono text-[10px] leading-relaxed flex items-start gap-3">
+                              <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                              <span>{errorMessage}</span>
+                            </div>
                           )}
-                        >
-                          {editingId ? "SAVE CONFIGURATION" : "ESTABLISH CONNECTION"}
-                          <Zap size={18} fill="currentColor" />
-                        </button>
+                          <button 
+                            onClick={handleAnalyze}
+                            disabled={!isReadyToAnalyze}
+                            className={cn(
+                              "w-full py-5 rounded-xl font-bold transition-all flex items-center justify-center gap-3",
+                              isReadyToAnalyze 
+                                ? "bg-blue-500 text-white hover:bg-blue-600 shadow-lg shadow-blue-500/20 active:scale-95" 
+                                : "bg-white/5 text-white/20 cursor-not-allowed border border-white/5"
+                            )}
+                          >
+                            {editingId ? "SAVE CONFIGURATION" : "ESTABLISH CONNECTION"}
+                            <Zap size={18} fill="currentColor" />
+                          </button>
+                        </div>
                       )}
 
                       {status === 'analyzing' && (
